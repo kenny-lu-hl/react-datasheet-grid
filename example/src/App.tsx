@@ -33,6 +33,7 @@ function App() {
     {
       ...keyColumn<Row, 'lastName'>('lastName', textColumn),
       title: 'Last name',
+      keepFocus: true,
       grow: 2,
     },
   ]
@@ -46,7 +47,11 @@ function App() {
         background: '#f3f3f3',
       }}
     >
-      <DataSheetGrid value={data} onChange={setData} columns={columns} />
+      <DataSheetGrid 
+      value={data} 
+      onChange={setData} 
+      columns={columns}
+     />
     </div>
   )
 }
