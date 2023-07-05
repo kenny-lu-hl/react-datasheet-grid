@@ -1631,7 +1631,10 @@ export const DataSheetGrid = React.memo(
       const onContextMenu = useCallback(
         (event: MouseEvent) => {
           const clickInside =
-            innerRef.current?.contains(event.target as Node) || false
+            innerRef.current?.contains(event.target as Node) ||
+            (event.target as HTMLElement).className.includes('dsg-context-menu') ||  // to match 'dsg-context-menu' or 'dsg-context-menu-item' class(es)
+            false
+
 
           const cursorIndex = clickInside
             ? getCursorIndex(event, true, true)

@@ -1,3 +1,8 @@
+# Fork of react-datasheet-grid with following fixed & feature updates
+- Fix: where releasing right mouse click opens browser context menu on windows OS
+     https://github.com/nick-keller/react-datasheet-grid/issues/302
+- Feature added: allow inserting new rows white pasting data to table.
+
 # react-datasheet-grid
 
 ![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/nick-keller/react-datasheet-grid/tests.yml?branch=master)
