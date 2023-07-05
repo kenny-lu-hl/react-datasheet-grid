@@ -25,6 +25,7 @@ export const Grid = <T extends any>({
   fullWidth,
   selection,
   activeCell,
+  activeHeaderCell,
   rowClassName,
   cellClassName,
   children,
@@ -51,6 +52,7 @@ export const Grid = <T extends any>({
   cellClassName: DataSheetGridProps<T>['cellClassName']
   fullWidth: boolean
   selection: Selection | null
+  activeHeaderCell: Cell | null
   activeCell: Cell | null
   children: ReactNode
   editing: boolean
@@ -157,10 +159,11 @@ export const Grid = <T extends any>({
                 left={col.start}
                 className={cx(
                   'dsg-cell-header',
-                  selectionColMin !== undefined &&
+                  (selectionColMin !== undefined &&
                     selectionColMax !== undefined &&
                     selectionColMin <= col.index - 1 &&
-                    selectionColMax >= col.index - 1 &&
+                    selectionColMax >= col.index - 1 ||
+                    activeHeaderCell?.col === col.index - 1) &&
                     'dsg-cell-header-active',
                   columns[col.index].headerClassName
                 )}

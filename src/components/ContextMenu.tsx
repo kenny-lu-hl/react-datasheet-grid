@@ -28,6 +28,10 @@ export const defaultRenderItem = (item: ContextMenuItem) => {
     )
   }
 
+  if (item.type === 'PASTE_INSERT_BELOW') {
+    return <>Paste (insert rows below)</>
+  }
+
   if (item.type === 'INSERT_ROW_BELLOW') {
     return <>Insert row below</>
   }

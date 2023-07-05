@@ -1,3 +1,4 @@
+// TODO: refactor possibilities: instead of using activeHeaderCell..  just use activeCell. Then determine from activeCell coords whether the active cell is a header cell.
 import React, {
   useCallback,
   useEffect,
@@ -14,6 +15,7 @@ import {
   DataSheetGridRef,
   Operation,
   Selection,
+  PasteOptions
 } from '../types'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useResizeDetector } from 'react-resize-detector'
@@ -155,13 +157,19 @@ export const DataSheetGrid = React.memo(
         setExpandingSelectionFromRowIndex,
       ] = useState<number | null>(null)
 
-      // Highlighted cell, null when not focused
+      // Highlighted (data) cell, null when not focused
       const [activeCell, setActiveCell] = useDeepEqualState<
         (Cell & ScrollBehavior) | null
       >(null)
 
       // The selection cell and the active cell are the two corners of the selection, null when nothing is selected
       const [selectionCell, setSelectionCell] = useDeepEqualState<
+        (Cell & ScrollBehavior) | null
+      >(null)
+
+      // TODO
+      // Selectable header cell when table has no data. Allows pasting data below header cell (and opening context menu) without data cells in the table.
+      const [activeHeaderCell, setActiveHeaderCell] = useDeepEqualState<
         (Cell & ScrollBehavior) | null
       >(null)
 
@@ -214,12 +222,12 @@ export const DataSheetGrid = React.memo(
 
       // Blur any element on focusing the grid
       useEffect(() => {
-        if (activeCell !== null) {
+        if (activeCell !== null || activeHeaderCell !== null) {
           ; (document.activeElement as HTMLElement).blur()
           window.getSelection()?.removeAllRanges()
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [activeCell !== null])
+      }, [activeCell !== null, activeHeaderCell !== null])
 
       // Extract the coordinates of the cursor from a mouse event
       const getCursorIndex = useCallback(
@@ -692,8 +700,87 @@ export const DataSheetGrid = React.memo(
       useDocumentEventListener('cut', onCut)
 
       const applyPasteDataToDatasheet = useCallback(
-        async (pasteData: string[][]) => {
-          if (!editing && activeCell) {
+        async (pasteData: string[][], options: PasteOptions = {}) => {
+
+          if (lockRows && options.insertBelow) { return }
+
+          const updateDataRows = async (data_: T[], pasteData_: string[][], firstPastedCell_: Cell) => {
+            for (
+              let columnIndex = 0;
+              columnIndex < pasteData_[0].length &&
+              firstPastedCell_.col + columnIndex <
+                columns.length - (hasStickyRightColumn ? 2 : 1);
+              columnIndex++
+            ) {
+              const pasteValue =
+                columns[firstPastedCell_.col + columnIndex + 1]?.pasteValue
+
+              if (pasteValue) {
+                for (
+                  let rowIndex = 0;
+                  rowIndex < pasteData_.length;
+                  rowIndex++
+                ) {
+                  if (
+                    !isCellDisabled({
+                      col: firstPastedCell_.col + columnIndex,
+                      row: firstPastedCell_.row + rowIndex,
+                    })
+                  ) {
+                    data_[firstPastedCell_.row + rowIndex] = await pasteValue({
+                      rowData: data_[firstPastedCell_.row + rowIndex],
+                      value: pasteData_[rowIndex][columnIndex],
+                      rowIndex: firstPastedCell_.row + rowIndex,
+                    })
+                  }
+                }
+              }
+            }
+          }
+
+          // Paste (insert new rows below)
+          if (options.insertBelow) {
+            const newData = [...data]
+            let cellAbove
+
+            if (activeHeaderCell) {
+              cellAbove = activeHeaderCell
+            }
+            else if (selection) {
+              cellAbove = {row: selection.max.row, col:selection.min.col}
+            }
+            else if (!editing && activeCell) {
+              cellAbove = activeCell
+            } 
+            else {
+              return
+            }
+            const firstPastedCell = {col: cellAbove.col, row: cellAbove.row + 1} // New cell in inserted row(s) where pasted data starts.
+            const lastPastedRow = firstPastedCell.row + pasteData.length - 1
+            newData.splice(firstPastedCell.row, 0,  ...new Array(pasteData.length).fill(0).map(() => createRow()))
+
+            await updateDataRows(newData, pasteData, firstPastedCell)
+            onChange(newData, [
+              {
+                type: 'CREATE',
+                fromRowIndex: firstPastedCell.row,
+                toRowIndex: lastPastedRow,
+              }
+            ])
+            setActiveCell({ col: firstPastedCell.col, row: firstPastedCell.row })
+            setSelectionCell({
+              col: Math.min(
+                firstPastedCell.col + pasteData[0].length - 1,
+                columns.length - (hasStickyRightColumn ? 3 : 2)
+              ),
+              row: lastPastedRow,
+            })
+
+            return
+          }
+
+          // Paste (overwrite active/selected cells)
+          if (!activeHeaderCell && (!editing && activeCell)) {  // Cannot paste to header cell or data cells being edited.
             const min: Cell = selection?.min || activeCell
             const max: Cell = selection?.max || activeCell
 
@@ -701,20 +788,18 @@ export const DataSheetGrid = React.memo(
               pasteData[0].map((_, columnIndex) => {
                 const prePasteValues =
                   columns[min.col + columnIndex + 1]?.prePasteValues
-
                 const values = pasteData.map((row) => row[columnIndex])
                 return prePasteValues?.(values) ?? values
               })
             )
-
+  
             pasteData = pasteData.map((_, rowIndex) =>
               results.map((column) => column[rowIndex])
             )
-
+  
             // Paste single row
             if (pasteData.length === 1) {
               const newData = [...data]
-
               for (
                 let columnIndex = 0;
                 columnIndex < pasteData[0].length;
@@ -722,7 +807,7 @@ export const DataSheetGrid = React.memo(
               ) {
                 const pasteValue =
                   columns[min.col + columnIndex + 1]?.pasteValue
-
+  
                 if (pasteValue) {
                   for (
                     let rowIndex = min.row;
@@ -744,7 +829,7 @@ export const DataSheetGrid = React.memo(
                   }
                 }
               }
-
+  
               onChange(newData, [
                 {
                   type: 'UPDATE',
@@ -764,7 +849,7 @@ export const DataSheetGrid = React.memo(
               // Paste multiple rows
               let newData = [...data]
               const missingRows = min.row + pasteData.length - data.length
-
+  
               if (missingRows > 0) {
                 if (!lockRows) {
                   newData = [
@@ -774,39 +859,8 @@ export const DataSheetGrid = React.memo(
                 } else {
                   pasteData.splice(pasteData.length - missingRows, missingRows)
                 }
-              }
-
-              for (
-                let columnIndex = 0;
-                columnIndex < pasteData[0].length &&
-                min.col + columnIndex <
-                  columns.length - (hasStickyRightColumn ? 2 : 1);
-                columnIndex++
-              ) {
-                const pasteValue =
-                  columns[min.col + columnIndex + 1]?.pasteValue
-
-                if (pasteValue) {
-                  for (
-                    let rowIndex = 0;
-                    rowIndex < pasteData.length;
-                    rowIndex++
-                  ) {
-                    if (
-                      !isCellDisabled({
-                        col: min.col + columnIndex,
-                        row: min.row + rowIndex,
-                      })
-                    ) {
-                      newData[min.row + rowIndex] = await pasteValue({
-                        rowData: newData[min.row + rowIndex],
-                        value: pasteData[rowIndex][columnIndex],
-                        rowIndex: min.row + rowIndex,
-                      })
-                    }
-                  }
-                }
-              }
+              }              
+              await updateDataRows(newData, pasteData, min)
 
               const operations: Operation[] = [
                 {
@@ -818,7 +872,7 @@ export const DataSheetGrid = React.memo(
                     (!lockRows && missingRows > 0 ? missingRows : 0),
                 },
               ]
-
+  
               if (missingRows > 0 && !lockRows) {
                 operations.push({
                   type: 'CREATE',
@@ -826,7 +880,7 @@ export const DataSheetGrid = React.memo(
                   toRowIndex: min.row + pasteData.length,
                 })
               }
-
+  
               onChange(newData, operations)
               setActiveCell({ col: min.col, row: min.row })
               setSelectionCell({
@@ -841,6 +895,7 @@ export const DataSheetGrid = React.memo(
         },
         [
           activeCell,
+          activeHeaderCell,
           columns,
           createRow,
           data,
@@ -856,10 +911,42 @@ export const DataSheetGrid = React.memo(
         ]
       )
 
+      const paste = useCallback(
+        async (options: PasteOptions = {}) => {
+          if (navigator.clipboard.read !== undefined) {
+            const items = await navigator.clipboard.read()
+            items.forEach(async (item) => {
+              let pasteData = [['']]
+              if (item.types.includes('text/plain')) {
+                const plainTextData = await item.getType('text/plain')
+                pasteData = parseTextPlainData(await plainTextData.text())
+              } else if (item.types.includes('text/html')) {
+                const htmlTextData = await item.getType('text/html')
+                pasteData = parseTextHtmlData(await htmlTextData.text())
+              } else if (item.types.includes('text')) {
+                const htmlTextData = await item.getType('text')
+                pasteData = parseTextHtmlData(await htmlTextData.text())
+              }
+              applyPasteDataToDatasheet(pasteData, options)
+            })
+          } else if (navigator.clipboard.readText !== undefined) {
+            const text = await navigator.clipboard.readText()
+            applyPasteDataToDatasheet(parseTextPlainData(text), options)
+          } else {
+            alert(
+              'This action is unavailable in your browser, but you can still use Ctrl+V for paste'
+            )
+          }
+        },
+        [applyPasteDataToDatasheet]
+      )
+
+      // TODO: add case for activeHeader
       const onPaste = useCallback(
         (event: ClipboardEvent) => {
-          if (activeCell && !editing) {
+          if (activeCell && !editing || activeHeaderCell) {
             let pasteData = [['']]
+            const pasteOptions = {insertBelow: activeCell ? false : true} // If table is empty and header cell is active, insert new rows when pasting
             if (event.clipboardData?.types.includes('text/html')) {
               pasteData = parseTextHtmlData(
                 event.clipboardData?.getData('text/html')
@@ -873,11 +960,14 @@ export const DataSheetGrid = React.memo(
                 event.clipboardData?.getData('text')
               )
             }
-            applyPasteDataToDatasheet(pasteData)
+            applyPasteDataToDatasheet(pasteData, pasteOptions)
             event.preventDefault()
           }
+
+          // TODO: if activeHeader, create new row and paste to it.
+          // applyPasteDataToDatasheet(pasteData, true).   insert below == true.
         },
-        [activeCell, applyPasteDataToDatasheet, editing]
+        [activeCell, activeHeaderCell, applyPasteDataToDatasheet, editing]
       )
 
       useDocumentEventListener('paste', onPaste)
@@ -889,7 +979,7 @@ export const DataSheetGrid = React.memo(
           }
 
           const rightClick =
-            event.button === 2 || (event.button === 0 && event.ctrlKey)
+            event.button === 2 || (event.button === 0 && event.ctrlKey) // right button OR left + CTRL
           const clickInside =
             innerRef.current?.contains(event.target as Node) || false
 
@@ -897,14 +987,16 @@ export const DataSheetGrid = React.memo(
             ? getCursorIndex(event, true, true)
             : null
 
+            
           if (
             !clickInside &&
             editing &&
             activeCell &&
             columns[activeCell.col + 1].keepFocus
-          ) {
-            return
-          }
+            ) {
+              return
+            }
+    
 
           if (
             event.target instanceof HTMLElement &&
@@ -962,6 +1054,11 @@ export const DataSheetGrid = React.memo(
             cursorIndex.row >= selection.min.row &&
             cursorIndex.row <= selection.max.row
 
+          const clickOnHeaderCell =
+            cursorIndex?.row === -1 && 
+            cursorIndex?.col >= 0 && 
+            !clickOnSelectedStickyRightColumn
+
           if (rightClick && !disableContextMenu) {
             setContextMenu({
               x: event.clientX,
@@ -970,8 +1067,19 @@ export const DataSheetGrid = React.memo(
             })
           }
 
+          // TODO
+          if (clickOnHeaderCell) {
+            setActiveHeaderCell(
+              data.length === 0
+                ? {col: cursorIndex.col, row: cursorIndex.row }
+                : null // Header cell can only be active if there are no data cells.
+            )
+          } else {
+            setActiveHeaderCell(null)
+          }
+
           if (
-            (!(event.shiftKey && activeCell) || rightClick) &&
+            (!(event.shiftKey && activeCell) || rightClick) &&   // When shift is pressed, dont change active cell. Expand the selection.
             data.length > 0
           ) {
             setActiveCell(
@@ -979,8 +1087,8 @@ export const DataSheetGrid = React.memo(
                 col:
                   (rightClickInSelection || rightClickOnSelectedHeaders) &&
                   activeCell
-                    ? activeCell.col
-                    : Math.max(
+                    ? activeCell.col   // keeps active cell if right click in selection (keeps same selection)
+                    : Math.max(        // 
                         0,
                         clickOnStickyRightColumn ? 0 : cursorIndex.col
                       ),
@@ -1028,6 +1136,7 @@ export const DataSheetGrid = React.memo(
           )
 
           if (event.shiftKey && activeCell && !rightClick) {
+            // Expands selection when left click + shift
             setSelectionCell(
               cursorIndex && {
                 col: Math.max(
@@ -1044,27 +1153,28 @@ export const DataSheetGrid = React.memo(
                 cursorIndex?.row === -1 ||
                 clickOnStickyRightColumn)
             ) {
+              // If clicked on column header, row header, or sticky cell
               let col = cursorIndex.col
               let row = cursorIndex.row
               let doNotScrollX = false
               let doNotScrollY = false
 
               if (cursorIndex.col === -1 || clickOnStickyRightColumn) {
-                col = columns.length - (hasStickyRightColumn ? 3 : 2)
+                col = columns.length - (hasStickyRightColumn ? 3 : 2)   // index of last data col
                 doNotScrollX = true
               }
 
               if (cursorIndex.row === -1) {
-                row = data.length - 1
+                row = data.length - 1                                  // index of last data row
                 doNotScrollY = true
               }
 
-              if (rightClickOnSelectedHeaders && selectionCell) {
+              if (rightClickOnSelectedHeaders && selectionCell) {     // if clicked header is within cell selection range, keeps the current cell sulection
                 col = selectionCell.col
                 doNotScrollY = true
               }
 
-              if (
+              if (                                                    // if clicked column gutter (header) is within cell selection range, keeps current cell selection.
                 (rightClickOnSelectedGutter ||
                   clickOnSelectedStickyRightColumn) &&
                 selectionCell
@@ -1073,12 +1183,12 @@ export const DataSheetGrid = React.memo(
                 doNotScrollX = true
               }
 
-              setSelectionCell({ col, row, doNotScrollX, doNotScrollY })
+              setSelectionCell({ col, row, doNotScrollX, doNotScrollY })     // sets selection to entire row, entire row, or entire table
             } else {
-              setSelectionCell(null)
+              setSelectionCell(null)   // no selection.
             }
 
-            if (clickInside) {
+            if (clickInside) { 
               event.preventDefault()
             }
           }
@@ -1096,6 +1206,7 @@ export const DataSheetGrid = React.memo(
           disableContextMenu,
           setSelectionMode,
           setActiveCell,
+          setActiveHeaderCell,
           setSelectionCell,
           selectionCell,
           data.length,
@@ -1276,220 +1387,227 @@ export const DataSheetGrid = React.memo(
       )
       useDocumentEventListener('mousemove', onMouseMove)
 
+
       const onKeyDown = useCallback(
-        (event: KeyboardEvent) => {
-          if (!activeCell) {
-            return
-          }
-
-          if (event.isComposing) {
-            return
-          }
-
-          // Tab from last cell of a row
-          if (
-            event.key === 'Tab' &&
-            !event.shiftKey &&
-            activeCell.col ===
-              columns.length - (hasStickyRightColumn ? 3 : 2) &&
-            !columns[activeCell.col + 1].disableKeys
-          ) {
-            // Last row
-            if (activeCell.row === data.length - 1) {
-              if (afterTabIndexRef.current) {
-                event.preventDefault()
-
-                setActiveCell(null)
-                setSelectionCell(null)
-                setEditing(false)
-
-                const allElements = getAllTabbableElements()
-                const index = allElements.indexOf(afterTabIndexRef.current)
-
-                allElements[(index + 1) % allElements.length].focus()
-
-                return
-              }
-            } else {
-              setActiveCell((cell) => ({ col: 0, row: (cell?.row ?? 0) + 1 }))
-              setSelectionCell(null)
-              setEditing(false)
-              event.preventDefault()
-
+          (event: KeyboardEvent) => {
+              
+          if (activeCell) {
+            if (event.isComposing) {
               return
             }
-          }
-
-          // Shift+Tab from first cell of a row
-          if (
-            event.key === 'Tab' &&
-            event.shiftKey &&
-            activeCell.col === 0 &&
-            !columns[activeCell.col + 1].disableKeys
-          ) {
-            // First row
-            if (activeCell.row === 0) {
-              if (beforeTabIndexRef.current) {
-                event.preventDefault()
-
-                setActiveCell(null)
-                setSelectionCell(null)
-                setEditing(false)
-
-                const allElements = getAllTabbableElements()
-                const index = allElements.indexOf(beforeTabIndexRef.current)
-
-                allElements[
-                  (index - 1 + allElements.length) % allElements.length
-                ].focus()
-
-                return
-              }
-            } else {
-              setActiveCell((cell) => ({
-                col: columns.length - (hasStickyRightColumn ? 3 : 2),
-                row: (cell?.row ?? 1) - 1,
-              }))
-              setSelectionCell(null)
-              setEditing(false)
-              event.preventDefault()
-
-              return
-            }
-          }
-
-          if (event.key.startsWith('Arrow') || event.key === 'Tab') {
-            if (editing && columns[activeCell.col + 1].disableKeys) {
-              return
-            }
-
-            if (editing && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
-              return
-            }
-
-            const add = (
-              [x, y]: [number, number],
-              cell: Cell | null
-            ): Cell | null =>
-              cell && {
-                col: Math.max(
-                  0,
-                  Math.min(
-                    columns.length - (hasStickyRightColumn ? 3 : 2),
-                    cell.col + x
-                  )
-                ),
-                row: Math.max(0, Math.min(data.length - 1, cell.row + y)),
-              }
-
-            if (event.key === 'Tab' && event.shiftKey) {
-              setActiveCell((cell) => add([-1, 0], cell))
-              setSelectionCell(null)
-            } else {
-              const direction = {
-                ArrowDown: [0, 1],
-                ArrowUp: [0, -1],
-                ArrowLeft: [-1, 0],
-                ArrowRight: [1, 0],
-                Tab: [1, 0],
-              }[event.key] as [number, number]
-
-              if (event.ctrlKey || event.metaKey) {
-                direction[0] *= columns.length
-                direction[1] *= data.length
-              }
-
-              if (event.shiftKey) {
-                setSelectionCell((cell) => add(direction, cell || activeCell))
+  
+            // Tab from last cell of a row
+            if (
+              event.key === 'Tab' &&
+              !event.shiftKey &&
+              activeCell.col ===
+                columns.length - (hasStickyRightColumn ? 3 : 2) &&
+              !columns[activeCell.col + 1].disableKeys
+            ) {
+              // Last row
+              if (activeCell.row === data.length - 1) {
+                if (afterTabIndexRef.current) {
+                  event.preventDefault()
+  
+                  setActiveCell(null)
+                  setSelectionCell(null)
+                  setEditing(false)
+  
+                  const allElements = getAllTabbableElements()
+                  const index = allElements.indexOf(afterTabIndexRef.current)
+  
+                  allElements[(index + 1) % allElements.length].focus()
+  
+                  return
+                }
               } else {
-                setActiveCell((cell) => add(direction, cell))
+                setActiveCell((cell) => ({ col: 0, row: (cell?.row ?? 0) + 1 }))
                 setSelectionCell(null)
+                setEditing(false)
+                event.preventDefault()
+  
+                return
               }
             }
-            setEditing(false)
-
-            event.preventDefault()
-          } else if (event.key === 'Escape') {
-            if (!editing && !selectionCell) {
-              setActiveCell(null)
-            }
-
-            setSelectionCell(null)
-            setEditing(false)
-          } else if (
-            (event.key === 'Enter' || event.key === 'F2') &&
-            !event.ctrlKey &&
-            !event.metaKey &&
-            !event.altKey &&
-            !event.shiftKey
-          ) {
-            setSelectionCell(null)
-
-            if (editing) {
-              if (!columns[activeCell.col + 1].disableKeys) {
-                stopEditing()
+  
+            // Shift+Tab from first cell of a row
+            if (
+              event.key === 'Tab' &&
+              event.shiftKey &&
+              activeCell.col === 0 &&
+              !columns[activeCell.col + 1].disableKeys
+            ) {
+              // First row
+              if (activeCell.row === 0) {
+                if (beforeTabIndexRef.current) {
+                  event.preventDefault()
+  
+                  setActiveCell(null)
+                  setSelectionCell(null)
+                  setEditing(false)
+  
+                  const allElements = getAllTabbableElements()
+                  const index = allElements.indexOf(beforeTabIndexRef.current)
+  
+                  allElements[
+                    (index - 1 + allElements.length) % allElements.length
+                  ].focus()
+  
+                  return
+                }
+              } else {
+                setActiveCell((cell) => ({
+                  col: columns.length - (hasStickyRightColumn ? 3 : 2),
+                  row: (cell?.row ?? 1) - 1,
+                }))
+                setSelectionCell(null)
+                setEditing(false)
+                event.preventDefault()
+  
+                return
               }
-            } else if (!isCellDisabled(activeCell)) {
-              lastEditingCellRef.current = activeCell
-              setEditing(true)
-              scrollTo(activeCell)
             }
-          } else if (
-            event.key === 'Enter' &&
-            !event.ctrlKey &&
-            !event.metaKey &&
-            !event.altKey &&
-            event.shiftKey
-          ) {
-            insertRowAfter(selection?.max.row || activeCell.row)
-          } else if (
-            event.key === 'd' &&
-            (event.ctrlKey || event.metaKey) &&
-            !event.altKey &&
-            !event.shiftKey
-          ) {
-            duplicateRows(
-              selection?.min.row || activeCell.row,
-              selection?.max.row
-            )
-            event.preventDefault()
-          } else if (
-            (event.key.match(/^[ -~]$/) || event.code.match(/Key[A-Z]$/)) &&
-            !event.ctrlKey &&
-            !event.metaKey &&
-            !event.altKey
-          ) {
-            if (!editing && !isCellDisabled(activeCell)) {
-              lastEditingCellRef.current = activeCell
+  
+            if (event.key.startsWith('Arrow') || event.key === 'Tab') {
+              if (editing && columns[activeCell.col + 1].disableKeys) {
+                return
+              }
+  
+              if (editing && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+                return
+              }
+  
+              const add = (
+                [x, y]: [number, number],
+                cell: Cell | null
+              ): Cell | null =>
+                cell && {
+                  col: Math.max(
+                    0,
+                    Math.min(
+                      columns.length - (hasStickyRightColumn ? 3 : 2),
+                      cell.col + x
+                    )
+                  ),
+                  row: Math.max(0, Math.min(data.length - 1, cell.row + y)),
+                }
+  
+              if (event.key === 'Tab' && event.shiftKey) {
+                setActiveCell((cell) => add([-1, 0], cell))
+                setSelectionCell(null)
+              } else {
+                const direction = {
+                  ArrowDown: [0, 1],
+                  ArrowUp: [0, -1],
+                  ArrowLeft: [-1, 0],
+                  ArrowRight: [1, 0],
+                  Tab: [1, 0],
+                }[event.key] as [number, number]
+  
+                if (event.ctrlKey || event.metaKey) {
+                  direction[0] *= columns.length
+                  direction[1] *= data.length
+                }
+  
+                if (event.shiftKey) {
+                  setSelectionCell((cell) => add(direction, cell || activeCell))
+                } else {
+                  setActiveCell((cell) => add(direction, cell))
+                  setSelectionCell(null)
+                }
+              }
+              setEditing(false)
+  
+              event.preventDefault()
+            } else if (event.key === 'Escape') {
+              if (!editing && !selectionCell) {
+                setActiveCell(null)
+              }
+  
               setSelectionCell(null)
-              setEditing(true)
-              scrollTo(activeCell)
-            }
-          } else if (['Backspace', 'Delete'].includes(event.key)) {
-            if (!editing) {
-              deleteSelection()
+              setEditing(false)
+            } else if (
+              (event.key === 'Enter' || event.key === 'F2') &&
+              !event.ctrlKey &&
+              !event.metaKey &&
+              !event.altKey &&
+              !event.shiftKey
+            ) {
+              setSelectionCell(null)
+  
+              if (editing) {
+                if (!columns[activeCell.col + 1].disableKeys) {
+                  stopEditing()
+                }
+              } else if (!isCellDisabled(activeCell)) {
+                lastEditingCellRef.current = activeCell
+                setEditing(true)
+                scrollTo(activeCell)
+              }
+            } else if (
+              event.key === 'Enter' &&
+              !event.ctrlKey &&
+              !event.metaKey &&
+              !event.altKey &&
+              event.shiftKey
+            ) {
+              insertRowAfter(selection?.max.row || activeCell.row)
+            } else if (
+              event.key === 'd' &&
+              (event.ctrlKey || event.metaKey) &&
+              !event.altKey &&
+              !event.shiftKey
+            ) {
+              duplicateRows(
+                selection?.min.row || activeCell.row,
+                selection?.max.row
+              )
               event.preventDefault()
+            } else if (
+              (event.key.match(/^[ -~]$/) || event.code.match(/Key[A-Z]$/)) &&
+              !event.ctrlKey &&
+              !event.metaKey &&
+              !event.altKey
+            ) {
+              if (!editing && !isCellDisabled(activeCell)) {
+                lastEditingCellRef.current = activeCell
+                setSelectionCell(null)
+                setEditing(true)
+                scrollTo(activeCell)
+              }
+            } else if (['Backspace', 'Delete'].includes(event.key)) {
+              if (!editing) {
+                deleteSelection()
+                event.preventDefault()
+              }
+            } else if (event.key === 'a' && (event.ctrlKey || event.metaKey)) {
+              if (!editing) {
+                setActiveCell({
+                  col: 0,
+                  row: 0,
+                  doNotScrollY: true,
+                  doNotScrollX: true,
+                })
+                setSelectionCell({
+                  col: columns.length - (hasStickyRightColumn ? 3 : 2),
+                  row: data.length - 1,
+                  doNotScrollY: true,
+                  doNotScrollX: true,
+                })
+                event.preventDefault()
+              }
             }
-          } else if (event.key === 'a' && (event.ctrlKey || event.metaKey)) {
-            if (!editing) {
-              setActiveCell({
-                col: 0,
-                row: 0,
-                doNotScrollY: true,
-                doNotScrollX: true,
-              })
-              setSelectionCell({
-                col: columns.length - (hasStickyRightColumn ? 3 : 2),
-                row: data.length - 1,
-                doNotScrollY: true,
-                doNotScrollX: true,
-              })
-              event.preventDefault()
+          }
+          
+          if (activeHeaderCell) {
+           if (event.key === 'Escape') {
+              setActiveHeaderCell(null)
             }
           }
         },
         [
           activeCell,
+          activeHeaderCell,
           columns,
           data.length,
           deleteSelection,
@@ -1502,6 +1620,7 @@ export const DataSheetGrid = React.memo(
           selection?.min.row,
           selectionCell,
           setActiveCell,
+          setActiveHeaderCell,
           setSelectionCell,
           stopEditing,
           hasStickyRightColumn,
@@ -1553,32 +1672,21 @@ export const DataSheetGrid = React.memo(
               },
             },
             {
-              type: 'PASTE',
-              action: async (): Promise<void> => {
-                if (navigator.clipboard.read !== undefined) {
-                  const items = await navigator.clipboard.read()
-                  items.forEach(async (item) => {
-                    let pasteData = [['']]
-                    if (item.types.includes('text/plain')) {
-                      const plainTextData = await item.getType('text/plain')
-                      pasteData = parseTextPlainData(await plainTextData.text())
-                    } else if (item.types.includes('text/html')) {
-                      const htmlTextData = await item.getType('text/html')
-                      pasteData = parseTextHtmlData(await htmlTextData.text())
-                    } else if (item.types.includes('text')) {
-                      const htmlTextData = await item.getType('text')
-                      pasteData = parseTextHtmlData(await htmlTextData.text())
-                    }
-                    applyPasteDataToDatasheet(pasteData)
-                  })
-                } else if (navigator.clipboard.readText !== undefined) {
-                  const text = await navigator.clipboard.readText()
-                  applyPasteDataToDatasheet(parseTextPlainData(text))
-                } else {
-                  alert(
-                    'This action is unavailable in your browser, but you can still use Ctrl+V for paste'
-                  )
-                }
+              type: 'PASTE',  
+              action: async (): Promise<void> => {   
+                await paste()
+                setContextMenu(null)
+              },
+            },
+          )
+        }
+
+        if (activeHeaderCell || activeCell?.row !== undefined) {
+          items.push(
+            {
+              type: 'PASTE_INSERT_BELOW',  
+              action: async (): Promise<void> => {   
+                await paste({insertBelow: true})
                 setContextMenu(null)
               },
             }
@@ -1656,6 +1764,7 @@ export const DataSheetGrid = React.memo(
       }, [
         selection,
         activeCell,
+        activeHeaderCell,
         deleteRows,
         duplicateRows,
         insertRowAfter,
@@ -1781,6 +1890,7 @@ export const DataSheetGrid = React.memo(
             data={data}
             fullWidth={fullWidth}
             headerRowHeight={headerRowHeight}
+            activeHeaderCell={activeHeaderCell}
             activeCell={activeCell}
             innerRef={innerRef}
             rowHeight={getRowSize}

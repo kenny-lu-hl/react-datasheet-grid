@@ -93,7 +93,7 @@ export type AddRowsComponentProps = {
 
 export type ContextMenuItem =
   | {
-      type: 'INSERT_ROW_BELLOW' | 'DELETE_ROW' | 'DUPLICATE_ROW' | 'COPY' | 'CUT' | 'PASTE'
+      type: 'INSERT_ROW_BELLOW' | 'DELETE_ROW' | 'DUPLICATE_ROW' | 'COPY' | 'CUT' | 'PASTE' | 'PASTE_INSERT_BELOW'
       action: () => void
     }
   | {
@@ -178,4 +178,8 @@ export type DataSheetGridRef = {
   selection: SelectionWithId | null
   setActiveCell: (activeCell: CellWithIdInput | null) => void
   setSelection: (selection: SelectionWithIdInput | null) => void
+}
+
+export type PasteOptions = {
+  insertBelow?: boolean
 }
