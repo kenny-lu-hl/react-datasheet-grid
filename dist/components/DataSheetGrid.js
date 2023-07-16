@@ -1208,8 +1208,10 @@ exports.DataSheetGrid = react_1.default.memo(react_1.default.forwardRef(({ value
     (0, useDocumentEventListener_1.useDocumentEventListener)('keydown', onKeyDown);
     const onContextMenu = (0, react_1.useCallback)((event) => {
         var _a;
+        // True if clicked on elements with 'dsg-context-menu' or 'dsg-context-menu-item' class(es)
+        const clickedOnDsgContextMenu = (event.target instanceof HTMLElement && event.target.className.includes('dsg-context-menu'));
         const clickInside = ((_a = innerRef.current) === null || _a === void 0 ? void 0 : _a.contains(event.target)) ||
-            event.target.className.includes('dsg-context-menu') || // to match 'dsg-context-menu' or 'dsg-context-menu-item' class(es)
+            clickedOnDsgContextMenu ||
             false;
         const cursorIndex = clickInside
             ? getCursorIndex(event, true, true)
